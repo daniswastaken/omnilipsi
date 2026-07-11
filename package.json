@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "ytdlp-nodejs": "^3.4.4"
+  },
+  "allowScripts": {
+    "ytdlp-nodejs@3.4.4": true
+  }
+}
