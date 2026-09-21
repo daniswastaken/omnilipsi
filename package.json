@@ -1,8 +1,23 @@
 {
+  "name": "omnilipsi",
+  "version": "0.2.0",
+  "description": "Download anything, anytime, anywhere. Web UI + Cloudflare Workers API + local yt-dlp CLI.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "dl": "node src/scripts/main.js",
+    "tail": "wrangler tail"
+  },
   "dependencies": {
     "ytdlp-nodejs": "^3.4.4"
   },
+  "devDependencies": {
+    "wrangler": "^4.135.0"
+  },
   "allowScripts": {
-    "ytdlp-nodejs@3.4.4": true
+    "ytdlp-nodejs@3.4.4": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20260918.1": true
   }
 }

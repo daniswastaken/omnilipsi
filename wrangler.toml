@@ -1,0 +1,19 @@
+name = "omnilipsi"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = [ "/api/*" ]
+
+[vars]
+# Optional: set to a cobalt API instance to enable YouTube/TikTok/IG/etc extraction.
+# e.g. COBALT_API_URL = "https://cobalt-api.yourdomain.com"
+# Get a key from the instance owner and set it with:
+#   npx wrangler secret put COBALT_API_KEY
+# COBALT_API_URL = ""
+
+[observability]
+enabled = true

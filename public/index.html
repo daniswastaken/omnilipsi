@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Omnilipsi — Download anything, anytime, anywhere</title>
+<meta name="description" content="Paste any link, get downloadable media. Direct files instantly; app links via optional extractor." />
+<style>
+  :root { --bg:#0b0e14; --card:#141a26; --line:#232c40; --txt:#e8edf7; --mut:#93a0b8; --acc:#6ea8fe; --ok:#3ddc97; --warn:#ffb454; --err:#ff6b6b; }
+  * { box-sizing:border-box } body { margin:0; font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:radial-gradient(1000px 500px at 20% -10%,#1b2740,transparent),radial-gradient(900px 500px at 110% 0%,#231a3d,transparent),var(--bg); color:var(--txt); min-height:100vh }
+  .wrap { max-width:760px; margin:0 auto; padding:40px 18px 80px }
+  header { display:flex; align-items:center; gap:12px; margin-bottom:8px }
+  .logo { width:40px; height:40px; border-radius:12px; background:linear-gradient(135deg,#6ea8fe,#b48cff); display:grid; place-items:center; font-weight:800; color:#0b0e14 }
+  h1 { font-size:22px; margin:0 } p.sub { color:var(--mut); margin:4px 0 22px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px; box-shadow:0 10px 40px rgba(0,0,0,.35) }
+  .row { display:flex; gap:10px } input { flex:1; background:#0d1220; border:1px solid var(--line); color:var(--txt); border-radius:12px; padding:13px 14px; font-size:15px; min-width:0 }
+  input:focus { outline:2px solid var(--acc); border-color:var(--acc) }
+  button { border:0; border-radius:12px; padding:0 20px; font-weight:700; font-size:15px; cursor:pointer; background:var(--acc); color:#0a1020 }
+  button:disabled { opacity:.55; cursor:wait }
+  button.ghost { background:transparent; color:var(--txt); border:1px solid var(--line) }
+  .hint { color:var(--mut); font-size:13px; margin-top:10px }
+  .status { margin-top:14px; font-size:14px; min-height:22px } .status.err { color:var(--err) } .status.ok { color:var(--ok) }
+  #result { display:none; margin-top:16px } #result.show { display:block }
+  .meta { display:flex; gap:14px; align-items:flex-start } .meta img { width:120px; height:84px; object-fit:cover; border-radius:10px; border:1px solid var(--line); background:#000 } .meta h2 { font-size:17px; margin:0 0 4px } .meta p { margin:0; color:var(--mut); font-size:13px }
+  .badge { display:inline-block; font-size:12px; padding:2px 9px; border-radius:99px; border:1px solid var(--line); color:var(--mut); margin:8px 8px 0 0 }
+  .badge.warn { color:var(--warn); border-color:#4d3a1e } .badge.ok { color:var(--ok); border-color:#17493a }
+  ul.files { list-style:none; padding:0; margin:14px 0 0; display:grid; gap:10px }
+  ul.files li { display:flex; gap:10px; align-items:center; justify-content:space-between; background:#0d1322; border:1px solid var(--line); border-radius:12px; padding:11px 12px }
+  ul.files a { color:#fff; background:#2b3a5e; text-decoration:none; font-weight:700; padding:9px 14px; border-radius:10px; white-space:nowrap }
+  ul.files a:hover { background:#3a4f7e } small { color:var(--mut) }
+  footer { color:var(--mut); font-size:12.5px; margin-top:26px } code { background:#0d1220; border:1px solid var(--line); padding:1px 6px; border-radius:6px; font-size:12.5px }
+  .pill { float:right; font-size:12px; color:var(--mut); border:1px solid var(--line); border-radius:99px; padding:3px 10px }
+  @media (max-width:560px){ .row{flex-direction:column} button{padding:13px} .meta img{width:96px;height:72px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">Ω</div>
+    <div><h1>Omnilipsi</h1><p class="sub" style="margin:0">Download anything, anytime, anywhere.</p></div>
+    <span class="pill" id="extPill">checking extractor…</span>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <input id="url" type="url" placeholder="Paste any link — https://…  (.mp4, .mp3, page URL…)" autocomplete="off" spellcheck="false" />
+      <button id="go">Fetch</button>
+    </div>
+    <div class="hint">Direct media files download instantly via proxy. YouTube / TikTok / IG / X need an extractor backend — <code>COBALT_API_URL</code>. <button class="ghost" id="sample" style="padding:4px 10px;font-size:12px">try sample</button></div>
+    <div class="status" id="status"></div>
+
+    <div id="result">
+      <div class="meta">
+        <img id="thumb" alt="" style="display:none" />
+        <div><h2 id="title"></h2><p id="desc"></p><div id="badges"></div></div>
+      </div>
+      <ul class="files" id="files"></ul>
+      <div class="hint" id="note"></div>
+    </div>
+  </div>
+
+  <footer>
+    <p><b>How it works:</b> <code>GET /api/info?url=…</code> inspects the link (direct file → HEAD; page → OG/meta scrape; YouTube → oEmbed). <code>GET /api/dl?url=…</code> proxies the bytes with a proper download filename (fixes hotlink/CORS issues).</p>
+    <p><b>Full “any site” support:</b> deploy a <a href="https://cobalt.tools" style="color:var(--acc)">Cobalt API</a> instance (it runs yt-dlp), then <code>npx wrangler secret put COBALT_API_KEY</code> + set <code>COBALT_API_URL</code> in <code>wrangler.toml</code>. Workers can’t execute yt-dlp binaries directly — that’s a platform limit, not a bug.</p>
+    <p>Local power mode: <code>npm run dl -- "https://youtube.com/watch?v=…"</code> uses yt-dlp on your machine.</p>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $("status"), resultEl = $("result");
+
+health();
+$("go").onclick = fetchInfo;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") fetchInfo(); });
+$("sample").onclick = () => { $("url").value = "https://www.w3schools.com/html/mov_bbb.mp4"; fetchInfo(); };
+
+async function health() {
+  try {
+    const r = await fetch("/api/health"); const j = await r.json();
+    $("extPill").textContent = j.extractor?.enabled ? "extractor: on" : "extractor: off";
+    $("extPill").style.color = j.extractor?.enabled ? "var(--ok)" : "var(--mut)";
+  } catch { $("extPill").textContent = "extractor: ?"; }
+}
+
+async function fetchInfo() {
+  const target = $("url").value.trim();
+  if (!target) return say("Paste a link first.", true);
+  say("Resolving…"); setBusy(true); resultEl.classList.remove("show");
+  try {
+    const r = await fetch("/api/info?url=" + encodeURIComponent(target));
+    const j = await r.json();
+    if (!r.ok) return say("Error: " + (j.error || r.status) + (j.detail ? " — " + j.detail : ""), true);
+    render(j);
+    say(j.formats?.length ? `Found ${j.formats.length} file${j.formats.length>1?"s":""}.` : "No direct files found — see note.", false, true);
+  } catch (e) { say("Network error: " + e.message, true); }
+  finally { setBusy(false); }
+}
+
+function render(j) {
+  resultEl.classList.add("show");
+  $("title").textContent = j.title || j.url;
+  $("desc").textContent = [j.author, j.description].filter(Boolean).join(" — ").slice(0, 300);
+  const th = $("thumb");
+  if (j.thumbnail) { th.src = j.thumbnail; th.style.display = "block"; } else th.style.display = "none";
+  $("badges").innerHTML = "";
+  const add = (t, cls) => { const s = document.createElement("span"); s.className = "badge " + (cls||""); s.textContent = t; $("badges").appendChild(s); };
+  add(j.source || "unknown"); add(j.kind || "page");
+  if (j.needsExtractor) add("needs extractor", "warn"); else add("direct", "ok");
+  const ul = $("files"); ul.innerHTML = "";
+  (j.formats || []).forEach(f => {
+    const li = document.createElement("li");
+    const left = document.createElement("div");
+    left.innerHTML = `<b></b><br><small></small>`;
+    left.querySelector("b").textContent = f.label || f.ext;
+    left.querySelector("small").textContent = [f.kind, f.size ? fmtBytes(f.size) : null, f.contentType].filter(Boolean).join(" · ") || f.url.slice(0, 80);
+    const a = document.createElement("a");
+    a.href = f.download || ("/api/dl?url=" + encodeURIComponent(f.url));
+    a.textContent = "Download"; a.rel = "noopener";
+    li.append(left, a); ul.appendChild(li);
+  });
+  if (!(j.formats||[]).length) ul.innerHTML = "<li><div>No downloadable files. If this is a YouTube/TikTok/IG link, enable the extractor (see footer).</div></li>";
+  $("note").textContent = j.note || "";
+}
+
+function say(msg, isErr, isOk) {
+  statusEl.textContent = msg;
+  statusEl.className = "status" + (isErr ? " err" : isOk ? " ok" : "");
+}
+function setBusy(b) { $("go").disabled = b; $("go").textContent = b ? "…" : "Fetch"; }
+function fmtBytes(n) { n = +n; if (!n) return ""; const u = ["B","KB","MB","GB"]; let i = 0; while (n >= 1024 && i < 3) { n/=1024; i++; } return n.toFixed(n>=10||i===0?0:1)+" "+u[i]; }
+</script>
+</body>
+</html>
