@@ -61,7 +61,7 @@
 
   <footer>
     <p><b>How it works:</b> <code>GET /api/info?url=…</code> inspects the link (direct file → HEAD; page → OG/meta scrape; YouTube → oEmbed). <code>GET /api/dl?url=…</code> proxies the bytes with a proper download filename (fixes hotlink/CORS issues).</p>
-    <p><b>Full “any site” support:</b> deploy a <a href="https://cobalt.tools" style="color:var(--acc)">Cobalt API</a> instance (it runs yt-dlp), then <code>npx wrangler secret put COBALT_API_KEY</code> + set <code>COBALT_API_URL</code> in <code>wrangler.toml</code>. Workers can’t execute yt-dlp binaries directly — that’s a platform limit, not a bug.</p>
+    <p><b>Full “any site” support:</b> YouTube + direct files + pages with video metadata work with zero setup. For TikTok / IG / X / JS-heavy obscure sites, deploy the bundled yt-dlp backend in <code>./extractor</code> (one-click <code>render.yaml</code> / <code>fly.toml</code>, or any Docker host), then set <code>EXTRACTOR_API_URL</code> in <code>wrangler.toml</code> (+ <code>npx wrangler secret put EXTRACTOR_TOKEN</code> if set). Cobalt API instances also work via <code>COBALT_API_URL</code>.</p>
     <p>Local power mode: <code>npm run dl -- "https://youtube.com/watch?v=…"</code> uses yt-dlp on your machine.</p>
   </footer>
 </div>

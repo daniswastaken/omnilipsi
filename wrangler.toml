@@ -9,11 +9,12 @@ not_found_handling = "single-page-application"
 run_worker_first = [ "/api/*" ]
 
 [vars]
-# Optional: set to a cobalt API instance to enable YouTube/TikTok/IG/etc extraction.
-# e.g. COBALT_API_URL = "https://cobalt-api.yourdomain.com"
-# Get a key from the instance owner and set it with:
-#   npx wrangler secret put COBALT_API_KEY
-# COBALT_API_URL = ""
+# Universal extraction backend (real yt-dlp, handles TikTok/IG/X/obscure sites).
+# Deploy ./extractor (Render/Fly/Docker, free tiers work), then set:
+# EXTRACTOR_API_URL = "https://your-extractor.onrender.com"
+# and optionally: npx wrangler secret put EXTRACTOR_TOKEN
+# Legacy alternative: COBALT_API_URL = "https://cobalt-api.yourdomain.com"
+# (+ secret COBALT_API_KEY).
 
 [observability]
 enabled = true

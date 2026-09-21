@@ -1,0 +1,9 @@
+{
+  "name": "omnilipsi-extractor",
+  "version": "0.3.0",
+  "description": "yt-dlp extraction microservice for Omnilipsi",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

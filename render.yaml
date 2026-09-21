@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: omnilipsi-extractor
+    runtime: docker
+    dockerfilePath: ./extractor/Dockerfile
+    dockerContext: ./extractor
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: EXTRACTOR_TOKEN
+        sync: false

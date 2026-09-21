@@ -1,6 +1,6 @@
 {
   "name": "omnilipsi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Download anything, anytime, anywhere. Web UI + Cloudflare Workers API + local yt-dlp CLI.",
   "type": "module",
   "scripts": {

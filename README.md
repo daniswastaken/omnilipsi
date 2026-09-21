@@ -2,23 +2,40 @@
 Download anything, anytime, anywhere.
 
 Web UI + Cloudflare Workers API for universal media downloads.
+Live: `https://omnilipsi.daniswastaken.workers.dev`
 
-## What it does
+## What works with zero setup
 
-- Paste any link in the web UI → `GET /api/info?url=…` resolves it:
-  - **Direct files** (`.mp4/.mp3/.jpg/…`) → instant download metadata via `HEAD`.
-  - **Pages** → scrapes OpenGraph / twitter meta / `<video>` / `<audio>` tags.
-  - **YouTube** → `oEmbed` title/author/thumbnail.
-  - **Anything else (TikTok/IG/X/…)** → forwarded to your extractor if configured.
-- `GET /api/dl?url=…&filename=…` proxies bytes with `Content-Disposition: attachment` (fixes hotlink + CORS blocks, correct filename).
-- Local CLI keeps full yt-dlp power: `npm run dl -- "<url>" [--mp3]`.
+- **Direct files** (`.mp4/.mp3/.jpg/.pdf/…`) → instant metadata + proxied download.
+- **YouTube** (watch / shorts / youtu.be / embed) → native Innertube extraction
+  (up to 4K video + audio-only), files proxied with correct filenames.
+- **Pages exposing video** → OpenGraph / twitter player / `<video>` / `<audio>` /
+  JSON-LD `VideoObject` / oEmbed discovery.
+- `GET /api/dl?url=…` proxies bytes (`Content-Disposition: attachment`,
+  Range-aware) — fixes hotlink/CORS blocks.
 
-## Honest limit
+## For everything else (TikTok / IG / X / JS-heavy obscure sites)
 
-Cloudflare Workers **cannot run yt-dlp binaries** (no child processes / filesystem).
-So YouTube/TikTok/IG direct files need a tiny extractor backend. This repo is
-ready for it: set `COBALT_API_URL` (+ `COBALT_API_KEY` secret) and `/api/info`
-auto-delegates app links to your [Cobalt API](https://cobalt.tools) instance.
+Workers can't spawn binaries, so real yt-dlp lives in `./extractor`
+(Node stdlib + `yt-dlp` + `ffmpeg` Docker service):
+
+```sh
+# Render (no local Docker needed): new Web Service from this repo,
+# Docker runtime, dockerfilePath ./extractor/Dockerfile
+# Fly.io: fly launch --dockerfile extractor/Dockerfile
+# Any VPS: docker build -t omni-ext ./extractor && docker run -p 8000:8000 -e EXTRACTOR_TOKEN=... omni-ext
+```
+
+Then wire the Worker:
+
+```sh
+# wrangler.toml: EXTRACTOR_API_URL = "https://your-extractor-host"
+npx wrangler secret put EXTRACTOR_TOKEN   # if you set one
+npm run deploy
+```
+
+A Cobalt API instance also works (`COBALT_API_URL` + `COBALT_API_KEY` secret).
+`.github/workflows/extractor-image.yml` publishes the backend to GHCR on push.
 
 ## Run
 
@@ -26,19 +43,13 @@ auto-delegates app links to your [Cobalt API](https://cobalt.tools) instance.
 npm install
 npm run dev        # local Worker at http://localhost:8787
 npm run deploy     # deploy to *.workers.dev
-npm run dl -- "https://youtu.be/..."   # full-quality local download
+npm run dl -- "https://..." [--mp3]   # full-quality local yt-dlp download
 ```
 
 ## API
 
-- `GET /api/health` → `{ ok, version, extractor: { enabled } }`
-- `GET /api/info?url=https://…` → `{ title, thumbnail, formats: [{ label, ext, kind, url, download, size }] }`
+- `GET /api/health` → `{ ok, version, extractor: { enabled, custom, cobalt } }`
+- `GET /api/info?url=https://…` → `{ title, author, thumbnail, source, formats: [{ id, label, ext, kind, url, download, size }] }`
+  (`source`: `direct` | `youtube-innertube` | `page-meta` | `extractor` | `cobalt`)
 - `GET /api/dl?url=https://…&filename=x.mp4` → attachment stream (Range-aware)
-- `POST /api/extract { url }` → cobalt passthrough (501 if not configured)
-
-## Enable full-site extraction
-
-1. Deploy a Cobalt API instance (runs yt-dlp for you).
-2. In `wrangler.toml` set `COBALT_API_URL = "https://your-cobalt-api"`.
-3. `npx wrangler secret put COBALT_API_KEY` and paste its key.
-4. `npm run deploy`.
+- `POST /api/extract { url }` → backend passthrough (501 if none configured)

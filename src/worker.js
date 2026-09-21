@@ -1,9 +1,11 @@
 /* Omnilipsi worker — universal media downloader API + asset fallback.
- * Pure Workers (no yt-dlp binary): direct files + OG/meta scrape + proxy.
- * Set COBALT_API_URL (+ secret COBALT_API_KEY) for YouTube/TikTok/IG/etc.
+ * Workers can't spawn yt-dlp, so:
+ *  - direct files, page meta/JSON-LD, and YouTube Innertube run natively here;
+ *  - everything else delegates to EXTRACTOR_API_URL (bundled yt-dlp service
+ *    in ./extractor) or COBALT_API_URL when configured.
  */
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const MAX_URL_LEN = 2048;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -24,6 +26,9 @@ const DIRECT_EXTS = new Map([
   ["pdf", "file"], ["zip", "file"], ["rar", "file"], ["7z", "file"],
   ["m3u8", "stream"], ["mpd", "stream"],
 ]);
+
+const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // public YouTube WEB/ANDROID client key
+const INNERTUBE_URL = `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}&prettyPrint=false`;
 
 const YOUTUBE_HOSTS = new Set([
   "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
@@ -55,8 +60,20 @@ export default {
 };
 
 function extractorStatus(env) {
-  const base = (env.COBALT_API_URL || "").trim().replace(/\/+$/, "");
-  return { enabled: Boolean(base), base: base || null };
+  const cobalt = (env.COBALT_API_URL || "").trim().replace(/\/+$/, "");
+  const custom = (env.EXTRACTOR_API_URL || "").trim().replace(/\/+$/, "");
+  const base = custom || cobalt || null;
+  return { enabled: Boolean(base), base, custom: custom || null, cobalt: cobalt || null };
+}
+
+// Any configured backend (custom yt-dlp service first, cobalt second).
+async function tryBackend(pageUrl, env) {
+  const custom = (env.EXTRACTOR_API_URL || "").trim().replace(/\/+$/, "");
+  if (custom) {
+    const r = await tryCustomExtractor(pageUrl, custom, env.EXTRACTOR_TOKEN || "");
+    if (r) return r;
+  }
+  return await tryCobalt(pageUrl, env);
 }
 
 /* ---------- /api/info ---------- */
@@ -96,47 +113,53 @@ async function handleInfo(request, env) {
     });
   }
 
-  // 2) Generic page: fetch HTML + scrape meta.
+  // 2) Backend extractor first for non-direct links (covers TikTok/IG/X/
+  //    obscure JS-heavy sites via real yt-dlp when deployed).
+  const backend = await tryBackend(target, env);
+  if (backend && backend.formats?.length) return json(withDl(request, backend));
+
+  // 3) YouTube: native Innertube extraction (no backend needed).
+  const isYouTube = [...YOUTUBE_HOSTS].some((h) => parsed.hostname.toLowerCase() === h || parsed.hostname.toLowerCase().endsWith("." + h.replace(/^www\./, "")));
+  if (isYouTube) {
+    const viaTube = await tryInnertube(request, target).catch(() => null);
+    if (viaTube) return json(viaTube);
+    const oembed = await youtubeOembed(target).catch(() => null);
+    return json({
+      url: target,
+      kind: "page",
+      source: "youtube-meta",
+      title: oembed?.title || target,
+      author: oembed?.author || null,
+      thumbnail: oembed?.thumbnail || null,
+      description: null,
+      needsExtractor: true,
+      extractor: extractorStatus(env),
+      formats: [],
+      note: backend?.note || "YouTube stream lookup failed from this network (Google often blocks datacenter IPs). Deploy the bundled extractor service (./extractor) and set EXTRACTOR_API_URL for reliable YouTube downloads.",
+    });
+  }
+
+  // 4) Generic page: fetch HTML + scrape meta/JSON-LD/oEmbed.
   let html = "";
   try {
     html = await fetchText(target);
   } catch (e) {
-    // Page fetch failed — still try cobalt as fallback for app links.
-    const cobalt = await tryCobalt(target, env);
-    if (cobalt) return json(cobalt);
+    if (backend) return json(withDl(request, backend));
     return json({ error: "could not fetch that URL", detail: String(e?.message || e).slice(0, 200) }, 422);
   }
 
   const scraped = scrapePage(target, html);
-
-  // 3) YouTube: enrich with oEmbed (title/author/thumb) — still needs extractor for files.
-  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-  const isYouTube = [...YOUTUBE_HOSTS].some((h) => parsed.hostname.toLowerCase() === h || parsed.hostname.toLowerCase().endsWith("." + h.replace(/^www\./, "")));
-  void host;
-  if (isYouTube) {
-    const oembed = await youtubeOembed(target).catch(() => null);
-    const cobalt = await tryCobalt(target, env);
-    if (cobalt) {
-      if (oembed && !cobalt.thumbnail) cobalt.thumbnail = oembed.thumbnail;
-      if (oembed && !cobalt.title) cobalt.title = oembed.title;
-      return json(cobalt);
+  if (scraped.formats.length === 0) {
+    const disc = await fetchOembedDiscovery(target, html).catch(() => null);
+    if (disc) {
+      scraped.title = scraped.title && scraped.title !== target ? scraped.title : (disc.title || scraped.title);
+      scraped.description = scraped.description || disc.description || "";
+      scraped.image = scraped.image || disc.thumbnail || "";
+      if (!scraped.author && disc.author) scraped.siteName = disc.author;
     }
-    return json({
-      url: target,
-      kind: "page",
-      source: isYouTube ? "youtube-meta" : "page-meta",
-      title: oembed?.title || scraped.title,
-      author: oembed?.author || scraped.siteName,
-      thumbnail: oembed?.thumbnail || scraped.image,
-      description: scraped.description,
-      needsExtractor: true,
-      extractor: extractorStatus(env),
-      formats: scraped.formats.map((f) => ({ ...f, download: dlUrl(request, f.url, undefined) })),
-      note: "Workers can't run yt-dlp, so YouTube/app links need an extractor backend. Set COBALT_API_URL to enable one-click downloads.",
-    });
   }
 
-  // 4) If page already exposes direct media (og:video / <video src>), return it.
+  // 5) If page exposes media (og:video / JSON-LD VideoObject / <video src>), return it.
   if (scraped.formats.length > 0) {
     return json({
       url: target,
@@ -151,10 +174,8 @@ async function handleInfo(request, env) {
     });
   }
 
-  // 5) Nothing direct found — try cobalt if configured, else explain.
-  const cobalt = await tryCobalt(target, env);
-  if (cobalt) return json(cobalt);
-
+  // 6) Nothing found — backend already tried; explain.
+  if (backend) return json(withDl(request, backend));
   return json({
     url: target,
     kind: "page",
@@ -166,8 +187,15 @@ async function handleInfo(request, env) {
     needsExtractor: true,
     extractor: extractorStatus(env),
     formats: [],
-    note: "No direct media found in page metadata. This usually means the site loads media via JS or needs yt-dlp/cobalt. Set COBALT_API_URL to handle these links.",
+    note: "No downloadable media in page metadata. JS-rendered or extractor-only site: deploy ./extractor and set EXTRACTOR_API_URL (or set COBALT_API_URL).",
   });
+}
+
+function withDl(request, result) {
+  return {
+    ...result,
+    formats: (result.formats || []).map((f) => ({ ...f, download: f.download || dlUrl(request, f.url, f.filename) })),
+  };
 }
 
 /* ---------- /api/extract (cobalt passthrough) ---------- */
@@ -182,8 +210,8 @@ async function handleExtractPost(request, env) {
   const target = String(body.url || "").trim();
   const check = validatePublicUrl(target);
   if (!check.ok) return json({ error: check.error }, 400);
-  const cobalt = await tryCobalt(target, env);
-  if (!cobalt) return json({ error: "extractor not configured", hint: "Set COBALT_API_URL (+ COBALT_API_KEY secret) on the Worker." }, 501);
+  const cobalt = await tryBackend(target, env);
+  if (!cobalt) return json({ error: "extractor not configured", hint: "Deploy ./extractor and set EXTRACTOR_API_URL (or set COBALT_API_URL + COBALT_API_KEY secret)." }, 501);
   return json(cobalt);
 }
 
@@ -347,23 +375,145 @@ function scrapePage(pageUrl, html) {
   const audios = allGroups(html, /<audio[^>]+src=["']([^"']+)["']/gi);
   const formats = [];
   const seen = new Set();
-  for (const v of dedupe(videos).slice(0, 8)) {
-    const abs = absolutize(pageUrl, v);
-    if (!abs || seen.has(abs)) continue;
+  const pushUrl = (raw, kind, label) => {
+    const abs = absolutize(pageUrl, raw);
+    if (!abs || seen.has(abs)) return;
     seen.add(abs);
-    const ext = extOfPath(new URL(abs, pageUrl).pathname) || "mp4";
-    formats.push({ id: `video-${formats.length + 1}`, label: `Video ${formats.length + 1} · ${ext.toUpperCase()}`, ext, kind: "video", url: abs });
-  }
-  for (const a of dedupe(audios).slice(0, 4)) {
-    const abs = absolutize(pageUrl, a);
-    if (!abs || seen.has(abs)) continue;
-    seen.add(abs);
-    formats.push({ id: `audio-${formats.length + 1}`, label: `Audio · ${extOfPath(new URL(abs, pageUrl).pathname).toUpperCase() || "MP3"}`, ext: "mp3", kind: "audio", url: abs });
-  }
+    let ext = "";
+    try { ext = extOfPath(new URL(abs).pathname) || (kind === "audio" ? "mp3" : "mp4"); } catch { ext = kind === "audio" ? "mp3" : "mp4"; }
+    formats.push({ id: `${kind}-${formats.length + 1}`, label: label || `${kind[0].toUpperCase() + kind.slice(1)} ${formats.length + 1} · ${ext.toUpperCase()}`, ext, kind, url: abs });
+  };
+  for (const v of dedupe(videos).slice(0, 8)) pushUrl(v, "video");
+  for (const a of dedupe(audios).slice(0, 4)) pushUrl(a, "audio");
+  // JSON-LD VideoObject/AudioObject — catches obscure blogs, news, course sites.
+  for (const m of extractJsonLdMedia(pageUrl, html).slice(0, 8)) pushUrl(m.url, m.kind, m.label);
   if (image && !seen.has(image)) {
     formats.push({ id: "thumb", label: "Cover image", ext: extOfPath(new URL(image, pageUrl).pathname) || "jpg", kind: "image", url: image });
   }
   return { title: decodeEntities(ogTitle || title || siteName || pageUrl), description: decodeEntities(desc).slice(0, 500), siteName, image, formats };
+}
+
+// oEmbed discovery: <link rel="alternate" type="application/json+oembed" href="…">
+async function fetchOembedDiscovery(pageUrl, html) {
+  const tag = html.match(/<link[^>]+type=["']application\/json\+oembed["'][^>]*>/i)?.[0] || "";
+  const href = firstGroup(tag, /href=["']([^"']+)["']/i);
+  if (!href) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(absolutize(pageUrl, href), { headers: { "User-Agent": UA }, signal: ctrl.signal });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return { title: j.title || null, author: j.author_name || null, thumbnail: j.thumbnail_url || null, description: null };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function extractJsonLdMedia(pageUrl, html) {
+  const out = [];
+  for (const block of allGroups(html, /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]{1,60000})<\/script>/gi)) {
+    let data;
+    try { data = JSON.parse(block); } catch { continue; }
+    const nodes = Array.isArray(data) ? data : [data];
+    const walk = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const type = String(n["@type"] || "");
+      const kind = /Audio/i.test(type) ? "audio" : /Video|Media/i.test(type) ? "video" : null;
+      const raw = n.contentUrl || n.embedUrl || n.url;
+      if (kind && typeof raw === "string" && /^https?:\/\//i.test(absolutize(pageUrl, raw))) {
+        out.push({ url: absolutize(pageUrl, raw), kind, label: n.name ? `${String(n.name).slice(0, 80)} · ${kind}` : undefined });
+      }
+      for (const v of Object.values(n)) walk(v);
+    };
+    walk(nodes);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+/* ---------- YouTube Innertube (native, no backend) ---------- */
+
+function youtubeVideoId(pageUrl) {
+  let u;
+  try { u = new URL(pageUrl); } catch { return null; }
+  const host = u.hostname.toLowerCase();
+  if (host === "youtu.be") return u.pathname.split("/")[1]?.split("?")[0] || null;
+  if (host.endsWith("youtube.com")) {
+    if (u.pathname === "/watch") return u.searchParams.get("v");
+    const m = u.pathname.match(/^\/(shorts|live|embed|v)\/([\w-]{6,})/);
+    if (m) return m[2];
+  }
+  return null;
+}
+
+async function tryInnertube(request, pageUrl) {
+  const videoId = youtubeVideoId(pageUrl);
+  if (!videoId) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15000);
+  let player;
+  try {
+    const res = await fetch(INNERTUBE_URL, {
+      method: "POST",
+      headers: { "User-Agent": UA, "Content-Type": "application/json", Origin: "https://www.youtube.com" },
+      body: JSON.stringify({
+        videoId,
+        context: { client: { clientName: "ANDROID", clientVersion: "20.10.38", androidSdkVersion: 30, hl: "en", gl: "US" } },
+        playbackContext: { contentPlaybackContext: { html5Preference: "HTML5_PREF_WANTS" } },
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    player = await res.json();
+  } finally {
+    clearTimeout(t);
+  }
+  const status = player?.playabilityStatus?.status;
+  if (status !== "OK" || !player?.streamingData) return null;
+  const details = player.videoDetails || {};
+  const thumbs = details.thumbnail?.thumbnails || [];
+  const streams = [...(player.streamingData.formats || []), ...(player.streamingData.adaptiveFormats || [])]
+    .filter((f) => typeof f.url === "string" && f.url.startsWith("http"));
+  if (!streams.length) return null;
+
+  const seen = new Set();
+  const formats = [];
+  // Progressive (audio+video) first — one-file downloads.
+  const prog = streams.filter((f) => (f.audioQuality || "").includes("AUDIO_QUALITY") && f.width);
+  const rest = streams.filter((f) => !prog.includes(f));
+  for (const f of [...prog, ...rest].slice(0, 24)) {
+    const mime = String(f.mimeType || "");
+    const isAudio = mime.startsWith("audio/");
+    const ext = (mime.match(/codecs="[^"]*"/) ? "" : "", mime.includes("webm") ? "webm" : mime.includes("mp4") ? (isAudio ? "m4a" : "mp4") : (isAudio ? "m4a" : "mp4"));
+    const key = `${f.itag}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const q = f.qualityLabel || (isAudio ? `${Math.round((f.bitrate || 0) / 1000)}kbps audio` : `${f.height}p`);
+    formats.push({
+      id: `itag-${f.itag}`,
+      label: `${isAudio ? "Audio" : "Video"} · ${q} · ${ext.toUpperCase()}${prog.includes(f) ? " · 1 file" : ""}`,
+      ext, kind: isAudio ? "audio" : "video",
+      url: f.url,
+      size: f.contentLength ? Number(f.contentLength) : null,
+      contentType: mime.split(";")[0],
+    });
+    if (formats.length >= 12) break;
+  }
+  if (!formats.length) return null;
+  const safeTitle = (details.title || `YouTube ${videoId}`).slice(0, 120);
+  return {
+    url: pageUrl,
+    kind: "video",
+    source: "youtube-innertube",
+    title: safeTitle,
+    author: details.author || null,
+    thumbnail: thumbs.length ? thumbs[thumbs.length - 1].url : null,
+    description: (details.shortDescription || "").slice(0, 300),
+    needsExtractor: false,
+    formats: formats.map((f) => ({ ...f, filename: `${sanitizeFilename(safeTitle)}.${f.ext}`, download: dlUrl(request, f.url, `${sanitizeFilename(safeTitle)}.${f.ext}`) })),
+  };
 }
 
 async function youtubeOembed(pageUrl) {
@@ -377,6 +527,45 @@ async function youtubeOembed(pageUrl) {
     return { title: j.title || null, author: j.author_name || null, thumbnail: j.thumbnail_url || null };
   } finally {
     clearTimeout(t);
+  }
+}
+
+async function tryCustomExtractor(pageUrl, base, token) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const res = await fetch(`${base}/api/info?url=${encodeURIComponent(pageUrl)}`, {
+      headers: { "User-Agent": UA, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    clearTimeout(t);
+    if (!res.ok) return { url: pageUrl, kind: "page", source: "extractor-error", title: pageUrl, needsExtractor: true, formats: [], note: data?.error ? `Extractor: ${String(data.error).slice(0, 150)}` : `Extractor responded ${res.status}` };
+    if (data?.stream) {
+      // Backend offers a same-IP proxied stream (for ciphered/IP-locked/HLS).
+      const dl = `${base}/api/stream?url=${encodeURIComponent(pageUrl)}${data.formatId ? `&id=${encodeURIComponent(data.formatId)}` : ""}`;
+      return {
+        url: pageUrl, kind: data.kind || "video", source: "extractor", title: data.title || pageUrl,
+        author: data.author || null, thumbnail: data.thumbnail || null, needsExtractor: false,
+        formats: [{ id: "best", label: data.label || "Best · via extractor", ext: data.ext || "mp4", kind: data.kind || "video", url: dl }],
+      };
+    }
+    if (Array.isArray(data?.formats) && data.formats.length) {
+      return {
+        url: pageUrl, kind: data.kind || "video", source: "extractor", title: data.title || pageUrl,
+        author: data.author || null, thumbnail: data.thumbnail || null, description: data.description || null,
+        needsExtractor: false,
+        formats: data.formats.slice(0, 15).map((f, i) => ({
+          id: String(f.id || `f-${i}`), label: String(f.label || `${(f.ext || "media").toUpperCase()} · option ${i + 1}`),
+          ext: f.ext || "mp4", kind: f.kind || "video", url: String(f.url || ""),
+          size: f.size ?? null, contentType: f.contentType || null,
+        })).filter((f) => f.url),
+      };
+    }
+    return null;
+  } catch (e) {
+    clearTimeout(t);
+    return { url: pageUrl, kind: "page", source: "extractor-error", title: pageUrl, needsExtractor: true, formats: [], note: `Extractor unreachable: ${String(e?.message || e).slice(0, 120)}` };
   }
 }
 
