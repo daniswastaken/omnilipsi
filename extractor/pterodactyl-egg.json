@@ -1,0 +1,64 @@
+{
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-09-21T00:00:00+00:00",
+  "name": "Omnilipsi Extractor",
+  "author": "daniswastaken@gmail.com",
+  "description": "yt-dlp extraction backend for Omnilipsi (TikTok / IG / X / obscure sites). Listens on {{SERVER_PORT}}.",
+  "features": [],
+  "docker_images": {
+    "ghcr.io/daniswastaken/omnilipsi-extractor:latest": "ghcr.io/daniswastaken/omnilipsi-extractor:latest"
+  },
+  "file_denylist": [],
+  "startup": "node server.js",
+  "config": {
+    "files": "{}",
+    "startup": {
+      "done": "extractor listening",
+      "userInteraction": []
+    },
+    "logs": "{}",
+    "stop": "SIGTERM"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/bash\n# Image ships with node + yt-dlp + ffmpeg. Nothing to install.\necho \"omnilipsi-extractor ready\"",
+      "container": "debian:bookworm-slim",
+      "entrypoint": "bash"
+    }
+  },
+  "variables": [
+    {
+      "name": "App Port",
+      "description": "Must match the server allocation port. Leave as {{SERVER_PORT}}.",
+      "env_variable": "PORT",
+      "default_value": "{{SERVER_PORT}}",
+      "user_viewable": true,
+      "user_editable": false,
+      "rules": "required|string|max:20",
+      "sort": 1
+    },
+    {
+      "name": "Auth Token",
+      "description": "Shared secret the Worker sends as Bearer. Must match EXTRACTOR_TOKEN secret on the Worker. Leave empty for open (not recommended if public).",
+      "env_variable": "EXTRACTOR_TOKEN",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:200",
+      "sort": 2
+    },
+    {
+      "name": "Extra yt-dlp args",
+      "description": "Optional extra flags, e.g. --proxy http://user:pass@host:port",
+      "env_variable": "YTDLP_ARGS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:500",
+      "sort": 3
+    }
+  ]
+}
